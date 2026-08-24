@@ -1,0 +1,279 @@
+# Recipe Vault — Postgres Schema
+
+Reference schema for implementation via Alembic migration + SQLAlchemy models.
+Vectors live in **Qdrant**, not Postgres — this schema has no vector columns.
+See design notes at the end for rationale behind non-obvious choices.
+
+## Conventions (apply to every table unless noted)
+
+- Primary key: `id UUID PRIMARY KEY DEFAULT gen_random_uuid()`
+- `created_at TIMESTAMPTZ NOT NULL DEFAULT now()`
+- `updated_at TIMESTAMPTZ NOT NULL DEFAULT now()` (auto-updated on write)
+- Foreign keys use `ON DELETE CASCADE` unless noted otherwise
+
+---
+
+## `users`
+
+| Column | Type | Constraints |
+|---|---|---|
+| id | UUID | PK |
+| email | VARCHAR(255) | UNIQUE, NOT NULL |
+| hashed_password | VARCHAR(255) | NOT NULL |
+| created_at, updated_at | TIMESTAMPTZ | |
+
+**Indexes:** `email` (unique)
+
+---
+
+## `recipes`
+
+| Column | Type | Constraints |
+|---|---|---|
+| id | UUID | PK |
+| owner_id | UUID | FK → users.id, NOT NULL |
+| title | VARCHAR(255) | NOT NULL |
+| description | TEXT | NULL |
+| cuisine | VARCHAR(100) | NULL |
+| difficulty | ENUM('easy','medium','hard') | NULL |
+| servings | SMALLINT | NULL |
+| prep_time_minutes | INT | NULL |
+| cook_time_minutes | INT | NULL |
+| total_time_minutes | INT | GENERATED ALWAYS AS (prep_time_minutes + cook_time_minutes) STORED |
+| notes | TEXT | NULL |
+| is_favorite | BOOLEAN | DEFAULT false |
+| search_vector | TSVECTOR | maintained by trigger (see below) |
+| created_at, updated_at | TIMESTAMPTZ | |
+
+**Indexes:** `owner_id`, `difficulty`, GIN trigram on `title`, GIN on `search_vector`
+
+**Trigger:** `search_vector` auto-populated from `title` (weight A), `cuisine` (weight B), `description`/`notes` (weight C) on INSERT/UPDATE. (Ingredient names are *not* included here — see `recipe_ingredients` search notes.)
+
+---
+
+## `recipe_steps`
+
+| Column | Type | Constraints |
+|---|---|---|
+| id | UUID | PK |
+| recipe_id | UUID | FK → recipes.id, NOT NULL |
+| step_number | SMALLINT | NOT NULL |
+| instruction | TEXT | NOT NULL |
+| timer_seconds | INT | NULL |
+
+**Indexes:** `recipe_id`
+**Constraints:** UNIQUE(`recipe_id`, `step_number`)
+
+---
+
+## `ingredients` (canonical dictionary)
+
+| Column | Type | Constraints |
+|---|---|---|
+| id | UUID | PK |
+| canonical_name | VARCHAR(255) | UNIQUE, NOT NULL |
+| category | VARCHAR(50) | NULL — produce / protein / dairy / spice / etc. |
+
+**Indexes:** `canonical_name` (unique), GIN trigram on `canonical_name`
+
+---
+
+## `recipe_ingredients` (join: per-recipe ingredient usage)
+
+| Column | Type | Constraints |
+|---|---|---|
+| id | UUID | PK |
+| recipe_id | UUID | FK → recipes.id, NOT NULL |
+| ingredient_id | UUID | FK → ingredients.id, **NULL allowed** |
+| raw_name | VARCHAR(255) | NOT NULL — text as entered, e.g. "ripe bananas" |
+| quantity | NUMERIC(10,2) | NULL |
+| unit | VARCHAR(50) | NULL |
+| is_optional | BOOLEAN | DEFAULT false |
+| ingredient_group | VARCHAR(100) | NULL — e.g. "For the sauce" |
+| position | SMALLINT | NOT NULL — display order |
+| prep_note | VARCHAR(255) | NULL — e.g. "finely chopped" |
+
+**Indexes:** `recipe_id`, `ingredient_id`, GIN trigram on `raw_name`
+
+---
+
+## `recipe_images`
+
+| Column | Type | Constraints |
+|---|---|---|
+| id | UUID | PK |
+| recipe_id | UUID | FK → recipes.id, NOT NULL |
+| url | VARCHAR(500) | NOT NULL |
+| is_primary | BOOLEAN | DEFAULT false |
+| position | SMALLINT | DEFAULT 0 |
+
+**Indexes:** `recipe_id`
+
+---
+
+## `tags` + `recipe_tags` (many-to-many)
+
+**`tags`**
+
+| Column | Type | Constraints |
+|---|---|---|
+| id | UUID | PK |
+| name | VARCHAR(100) | UNIQUE, NOT NULL |
+| category | VARCHAR(50) | NOT NULL — e.g. "dietary", "meal_type", "difficulty" |
+
+**`recipe_tags`**
+
+| Column | Type | Constraints |
+|---|---|---|
+| recipe_id | UUID | FK → recipes.id, PK (composite) |
+| tag_id | UUID | FK → tags.id, PK (composite) |
+
+**Indexes:** `tags.name` (unique)
+
+---
+
+## `sources` (canonical dictionary) + `recipe_sources` (join)
+
+**`sources`**
+
+| Column | Type | Constraints |
+|---|---|---|
+| id | UUID | PK |
+| source_type | ENUM('own','website','book','family','other') | NOT NULL |
+| name | VARCHAR(255) | NOT NULL — e.g. "Serious Eats", "Ottolenghi: Simple", "Grandma's recipe box" |
+| author | VARCHAR(255) | NULL |
+| url | VARCHAR(500) | NULL |
+
+**`recipe_sources`**
+
+| Column | Type | Constraints |
+|---|---|---|
+| id | UUID | PK |
+| recipe_id | UUID | FK → recipes.id, NOT NULL |
+| source_id | UUID | FK → sources.id, NOT NULL |
+| is_primary | BOOLEAN | DEFAULT true |
+
+**Indexes:** `recipe_sources.recipe_id`, `recipe_sources.source_id`, GIN trigram on `sources.name`
+
+---
+
+## `nutrition_facts` (optional, 1:1 with recipes)
+
+| Column | Type | Constraints |
+|---|---|---|
+| recipe_id | UUID | PK, FK → recipes.id |
+| calories | INT | NULL |
+| protein_g | NUMERIC(6,2) | NULL |
+| carbs_g | NUMERIC(6,2) | NULL |
+| fat_g | NUMERIC(6,2) | NULL |
+| fiber_g | NUMERIC(6,2) | NULL |
+| sugar_g | NUMERIC(6,2) | NULL |
+| sodium_mg | NUMERIC(8,2) | NULL |
+| per_serving | BOOLEAN | DEFAULT true |
+
+---
+
+## `cook_logs`
+
+| Column | Type | Constraints |
+|---|---|---|
+| id | UUID | PK |
+| recipe_id | UUID | FK → recipes.id, NOT NULL |
+| user_id | UUID | FK → users.id, NOT NULL |
+| cooked_at | TIMESTAMPTZ | DEFAULT now() |
+| rating | SMALLINT | NULL, CHECK (rating BETWEEN 1 AND 5) |
+| notes | TEXT | NULL |
+
+**Indexes:** composite on (`recipe_id`, `cooked_at`)
+
+---
+
+## `recipe_embeddings` (marker row — vector lives in Qdrant)
+
+| Column | Type | Constraints |
+|---|---|---|
+| recipe_id | UUID | PK, FK → recipes.id |
+| model_name | VARCHAR(100) | NOT NULL |
+| embedding_text | TEXT | NOT NULL — exact text that was embedded |
+| created_at, updated_at | TIMESTAMPTZ | |
+
+No vector column here — see design notes.
+
+---
+
+## `user_memories`
+
+| Column | Type | Constraints |
+|---|---|---|
+| id | UUID | PK |
+| user_id | UUID | FK → users.id, NOT NULL |
+| category | VARCHAR(50) | NOT NULL — dietary_restriction / allergy / dislike / preference |
+| key | VARCHAR(100) | NOT NULL |
+| value | TEXT | NOT NULL |
+| confidence | FLOAT | DEFAULT 1.0 |
+| source | VARCHAR(20) | DEFAULT 'explicit' — explicit \| inferred |
+| created_at, updated_at | TIMESTAMPTZ | |
+
+**Indexes:** `user_id`, `category`
+
+---
+
+## `chat_sessions` + `chat_messages`
+
+**`chat_sessions`**
+
+| Column | Type | Constraints |
+|---|---|---|
+| id | UUID | PK |
+| user_id | UUID | FK → users.id, NOT NULL |
+| title | VARCHAR(255) | NULL |
+| created_at, updated_at | TIMESTAMPTZ | |
+
+**`chat_messages`**
+
+| Column | Type | Constraints |
+|---|---|---|
+| id | UUID | PK |
+| session_id | UUID | FK → chat_sessions.id, NOT NULL |
+| role | VARCHAR(20) | NOT NULL — user \| assistant \| tool |
+| content | TEXT | NOT NULL |
+| tool_calls | JSONB | NULL |
+| created_at, updated_at | TIMESTAMPTZ | |
+
+**Indexes:** `chat_sessions.user_id`, `chat_messages.session_id`
+
+---
+
+## Entity relationships
+
+```
+users ──< recipes ──< recipe_steps
+              │  ──< recipe_ingredients >── ingredients
+              │  ──< recipe_images
+              │  ──< recipe_tags >── tags
+              │  ──< recipe_sources >── sources
+              │  ──< cook_logs
+              │  ──1:1── nutrition_facts
+              │  ──1:1── recipe_embeddings (marker only; vector in Qdrant)
+              │
+              ├──< user_memories
+              └──< chat_sessions ──< chat_messages
+```
+
+---
+
+## Design notes (context for implementation)
+
+1. **`recipe_ingredients.ingredient_id` is nullable.** Recipes can be entered with just `raw_name` and resolved to a canonical `ingredients` row later (fuzzy-match backfill job). Don't block recipe creation on ingredient resolution.
+
+2. **`total_time_minutes` is a Postgres generated column**, not computed in application code — guarantees it can never drift from `prep_time_minutes` + `cook_time_minutes`.
+
+3. **`difficulty` is an ENUM, not an integer.** Three fixed levels; enums are indexable and read clearly in queries. If more granularity is ever needed, this is one of the few things worth revisiting.
+
+4. **`recipes.search_vector` does NOT include ingredient names.** Ingredient-based keyword search goes through `recipe_ingredients.raw_name` (trigram index) directly, not the general full-text vector — see the ingredient search flow discussed separately.
+
+5. **`sources` and `recipe_sources` are a dictionary + join, not columns on `recipes`.** This mirrors the `ingredients` pattern and is what makes "browse all recipes from this cookbook/site" a real indexed query rather than a string filter. `is_primary` lets a recipe have one adapted-from source and one originally-from source without ambiguity about which displays by default.
+
+6. **`recipe_embeddings` has no vector column.** It's a marker/reconciliation row (model used, text embedded, last updated) — the actual vector lives in Qdrant, keyed by `recipe_id`. Compare `recipe_embeddings.updated_at` against `recipes.updated_at` to detect stale embeddings needing re-generation.
+
+7. **`cook_logs` replaces any `times_cooked`/`last_cooked_at` columns on `recipes`.** Derive counts/last-cooked via query (`COUNT(*)`, `MAX(cooked_at)`) rather than storing denormalized counters — only add a cached counter later if this specific query becomes a measured performance problem.
