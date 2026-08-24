@@ -110,7 +110,7 @@ uv run uvicorn app.main:app --reload
 ### 5. Start the Celery worker
 
 ```bash
-uv run celery -A app.worker worker --loglevel=info
+uv run celery -A app.core.celery worker --loglevel=info
 ```
 
 API docs available at `http://localhost:8000/docs`
