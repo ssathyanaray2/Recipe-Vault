@@ -34,3 +34,5 @@ alembic/versions/*.pyc
 
 # Logs
 *.log
+
+Future_Improvments.txt
