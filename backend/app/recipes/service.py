@@ -2,12 +2,15 @@
 Business logic for recipes.
 Coordinates repository calls; no raw DB queries here.
 """
+import logging
 import uuid
 from typing import Optional
 
 from sqlalchemy.orm import Session
 
 from app.core.exceptions import ConflictError, NotFoundError
+
+logger = logging.getLogger(__name__)
 from app.models.recipe import Recipe
 from app.models.source import RecipeSource, Source
 from app.recipes import repository as repo
@@ -40,6 +43,32 @@ from app.schemas.recipe.step import RecipeStepCreate, RecipeStepOut, RecipeStepU
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _trigger_ingestion(db: Session, recipe_id: uuid.UUID) -> None:
+    """
+    Mark the embedding row as PENDING, then fire Celery.
+    Writing PENDING before the task fires means any unstarted job is visible
+    in the dead-letter query (status=PENDING, updated_at old).
+    """
+    from app.models.embedding import EmbeddingStatus, RecipeEmbedding
+
+    marker = db.get(RecipeEmbedding, recipe_id)
+    if marker:
+        marker.status = EmbeddingStatus.PENDING
+    else:
+        db.add(RecipeEmbedding(
+            recipe_id=recipe_id,
+            model_name="",        # filled in by pipeline on success
+            embedding_text="",
+            status=EmbeddingStatus.PENDING,
+        ))
+    db.commit()
+
+    try:
+        from app.ingestion.tasks import ingest_recipe
+        ingest_recipe.delay(str(recipe_id))
+    except Exception:
+        logger.warning("Could not queue ingestion task for recipe %s", recipe_id)
 
 def _source_out(rs: RecipeSource, source: Source) -> SourceOut:
     return SourceOut(
@@ -191,6 +220,8 @@ def create_recipe(
     db.commit()
     db.refresh(recipe)
 
+    _trigger_ingestion(db, recipe_id)
+
     full = _require_full(db, recipe_id, owner_id)
     return RecipeCreateResponse(recipe=_build_recipe_out(full), warnings=warnings)
 
@@ -225,6 +256,7 @@ def update_recipe(
 ) -> RecipeOut:
     recipe = _require_recipe(db, recipe_id, owner_id)
     repo.update(db, recipe, data)
+    _trigger_ingestion(db, recipe_id)
     full = _require_full(db, recipe_id, owner_id)
     return _build_recipe_out(full)
 
@@ -233,6 +265,11 @@ def delete_recipe(
     db: Session, recipe_id: uuid.UUID, owner_id: uuid.UUID
 ) -> None:
     recipe = _require_recipe(db, recipe_id, owner_id)
+    try:
+        from app.vectorstore.qdrant import QdrantVectorStore
+        QdrantVectorStore().delete_by_recipe(str(recipe_id))
+    except Exception:
+        logger.warning("Could not delete Qdrant vectors for recipe %s — vectors may be orphaned", recipe_id)
     repo.delete(db, recipe)
 
 
