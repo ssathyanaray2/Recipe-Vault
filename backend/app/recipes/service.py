@@ -2,15 +2,16 @@
 Business logic for recipes.
 Coordinates repository calls; no raw DB queries here.
 """
-import logging
 import uuid
 from typing import Optional
 
 from sqlalchemy.orm import Session
 
+import structlog
+
 from app.core.exceptions import ConflictError, NotFoundError
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 from app.models.recipe import Recipe
 from app.models.source import RecipeSource, Source
 from app.recipes import repository as repo
