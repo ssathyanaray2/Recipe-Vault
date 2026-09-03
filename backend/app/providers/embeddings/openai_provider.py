@@ -1,12 +1,12 @@
 """OpenAI embedding provider."""
-import logging
 from typing import Literal
 
+import structlog
 from openai import OpenAI
 
 from app.core.config import settings
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 # OpenAI does not distinguish document vs query at the API level —
 # both use the same endpoint. input_type is accepted but ignored.
@@ -25,5 +25,5 @@ class OpenAIEmbeddingProvider:
         if not texts:
             return []
         response = self._client.embeddings.create(input=texts, model=self._model)
-        logger.debug("Embedded %d texts with %s", len(texts), self._model)
+        logger.debug("embed.done", count=len(texts), model=self._model)
         return [item.embedding for item in response.data]

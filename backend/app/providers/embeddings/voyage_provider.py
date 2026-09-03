@@ -1,12 +1,12 @@
 """Voyage AI embedding provider."""
-import logging
 from typing import Literal
 
+import structlog
 import voyageai
 
 from app.core.config import settings
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 class VoyageEmbeddingProvider:
@@ -22,5 +22,5 @@ class VoyageEmbeddingProvider:
         if not texts:
             return []
         result = self._client.embed(texts, model=self._model, input_type=input_type)
-        logger.debug("Embedded %d texts with %s", len(texts), self._model)
+        logger.debug("embed.done", count=len(texts), model=self._model)
         return result.embeddings
