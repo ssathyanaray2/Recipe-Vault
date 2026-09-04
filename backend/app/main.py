@@ -1,20 +1,25 @@
-import logging
 from contextlib import asynccontextmanager
 
+import structlog
 from fastapi import FastAPI
 from fastapi.exceptions import RequestValidationError
 from sqlalchemy import text
 
 from app.api.router import api_router
+from app.core.config import settings
 from app.core.error_handlers import (
     app_error_handler,
     request_validation_handler,
     unhandled_error_handler,
 )
 from app.core.exceptions import AppError
+from app.core.logging import setup_logging
 from app.db.session import SessionLocal
 
-logger = logging.getLogger(__name__)
+# Configure logging before anything else emits a log line
+setup_logging(log_level=settings.LOG_LEVEL, log_format=settings.LOG_FORMAT)
+
+logger = structlog.get_logger(__name__)
 
 
 @asynccontextmanager

@@ -3,8 +3,7 @@ Global exception handlers — registered on the FastAPI app in main.py.
 Every error response uses the same shape: {"error": "<CODE>", "message": "<text>"}
 Validation errors add a "detail" list for field-level information.
 """
-import logging
-
+import structlog
 from fastapi import Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
@@ -18,7 +17,7 @@ from app.core.exceptions import (
     ValidationError,
 )
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 # Map domain exception → (HTTP status, error code string)
 _STATUS_MAP: dict[type[AppError], tuple[int, str]] = {
@@ -55,7 +54,7 @@ async def request_validation_handler(request: Request, exc: RequestValidationErr
 
 
 async def unhandled_error_handler(request: Request, exc: Exception) -> JSONResponse:
-    logger.exception("Unhandled exception on %s %s", request.method, request.url.path)
+    logger.exception("unhandled_error", method=request.method, path=request.url.path, exc_info=True)
     return JSONResponse(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         content=_error_body("INTERNAL_ERROR", "An unexpected error occurred"),
